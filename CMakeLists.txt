@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.1 FATAL_ERROR)
 
 project(gau2grid
-        VERSION 2.0.4
+        VERSION 2.0.7
         LANGUAGES C)
 set(gau2grid_AUTHORS      "Daniel G. A. Smith")
 set(gau2grid_DESCRIPTION  "Fast computation of a gaussian and its derivative on a grid")
@@ -15,12 +15,17 @@ list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 include(psi4OptionsTools)
 option_with_default(MAX_AM "The maximum gaussian angular momentum to compile" 8)
 option_with_default(CMAKE_BUILD_TYPE "Build type (Release or Debug)" Release)
-option_with_flags(ENABLE_XHOST "Enables processor-specific optimization" ON
-                  "-xHost" "-march=native")
-
+if(CMAKE_CXX_COMPILER_ID MATCHES Intel)
+option_with_flags(ENABLE_XHOST "Enables processor-specific optimization (with MSVC, it enables AVX2 instructions)" ON
+                  "-xHost" "-march=native" "/arch:AVX2")
+else()
+option_with_flags(ENABLE_XHOST "Enables processor-specific optimization (with MSVC, it enables AVX2 instructions)" ON
+                  "-march=native" "-xHost" "/arch:AVX2")
+endif()
 option_with_default(BUILD_FPIC "Libraries will be compiled with position independent code" ON)
 option_with_print(BUILD_SHARED_LIBS "Build final library as shared, not static" ON)
 option_with_default(ENABLE_GENERIC "Enables mostly static linking of system libraries for shared library" OFF)
+option_with_default(DISABLE_PRAGMA "Disable certain pragma optimizations, appends _GG_NO_PRAGMA to compile flags" OFF )
 
 # Warnings
 if((${BUILD_SHARED_LIBS}) AND NOT ${BUILD_FPIC})
@@ -46,16 +51,16 @@ endif()
 message(STATUS "gau2grid install: ${CMAKE_INSTALL_PREFIX}")
 
 #  <<  Python  >>
-set(Python_ADDITIONAL_VERSIONS 3.8 3.7 3.6 3.5)  # adjust with CMake minimum FindPythonInterp
+set(Python_ADDITIONAL_VERSIONS 3.9 3.8 3.7 3.6 3.5)  # adjust with CMake minimum FindPythonInterp
 find_package(PythonLibsNew 3.6 REQUIRED)
 message(STATUS "${Cyan}Found Python ${PYTHON_VERSION_MAJOR}.${PYTHON_VERSION_MINOR}${ColourReset}: ${PYTHON_EXECUTABLE} (found version ${PYTHON_VERSION_STRING})")
 
 
 ################################  Main Project  ################################
 add_custom_command(
-    OUTPUT  gau2grid.h gau2grid_orbital.c gau2grid_phi.c gau2grid_deriv1.c gau2grid_deriv2.c gau2grid_deriv3.c gau2grid_transform.c gau2grid_helper.c
+    OUTPUT  gau2grid/gau2grid.h gau2grid_orbital.c gau2grid_phi.c gau2grid_deriv1.c gau2grid_deriv2.c gau2grid_deriv3.c gau2grid_transform.c gau2grid_helper.c
     COMMAND ${PYTHON_EXECUTABLE} -c "import sys; \
-                                     sys.path.append('${CMAKE_SOURCE_DIR}'); \
+                                     sys.path.append('${PROJECT_SOURCE_DIR}'); \
                                      import gau2grid as gg; \
                                      gg.c_gen.generate_c_gau2grid(${MAX_AM}, path='${CMAKE_CURRENT_BINARY_DIR}')"
     DEPENDS gau2grid/c_generator.py
@@ -88,6 +93,10 @@ endif()
 set_target_properties(gg PROPERTIES POSITION_INDEPENDENT_CODE ${BUILD_FPIC}
                                     SOVERSION 2)  # bump whenever interface has changes or removals
 
+if( DISABLE_PRAGMA )
+  target_compile_definitions( gg PRIVATE $<BUILD_INTERFACE:__GG_NO_PRAGMA> )
+endif()
+
 find_package(StandardMathLibraryC)
 target_link_libraries(gg PRIVATE ${STANDARD_MATH_LIBRARY})
 
@@ -102,7 +111,11 @@ include(CMakePackageConfigHelpers)
 
 set(PN ${PROJECT_NAME})
 
-target_include_directories(gg INTERFACE
+# Alias to allow for consistent manipulation as a subproject
+add_library( ${PN}::gg ALIAS gg )
+
+target_include_directories(gg PUBLIC
+                           $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}>
                            $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
 # GNUInstallDirs "DATADIR" wrong here; CMake search path wants "share".
@@ -116,14 +129,16 @@ write_basic_package_version_file(${CMAKE_CURRENT_BINARY_DIR}/${PN}ConfigVersion.
 
 # Install our files
 if(${NATIVE_PYTHON_INSTALL_WITH_LIB} OR (NOT(${INSTALL_PYMOD} AND ${NATIVE_PYTHON_INSTALL})))
-    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/gau2grid.h
-                  ${CMAKE_CURRENT_BINARY_DIR}/gau2grid_pragma.h
+    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/gau2grid/gau2grid.h
+                  ${CMAKE_CURRENT_BINARY_DIR}/gau2grid/gau2grid_pragma.h
                   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${PN})
 
     install(TARGETS gg
             EXPORT "${PN}Targets"
             ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+            PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
     install(FILES ${CMAKE_CURRENT_BINARY_DIR}/${PN}Config.cmake
                   ${CMAKE_CURRENT_BINARY_DIR}/${PN}ConfigVersion.cmake
@@ -131,6 +146,9 @@ if(${NATIVE_PYTHON_INSTALL_WITH_LIB} OR (NOT(${INSTALL_PYMOD} AND ${NATIVE_PYTHO
     install(EXPORT "${PN}Targets"
             NAMESPACE "${PN}::"
             DESTINATION ${CMAKECONFIG_INSTALL_DIR})
+    export(EXPORT "${PN}Targets"
+           NAMESPACE "${PN}::"
+           FILE "${PROJECT_BINARY_DIR}/${PN}Targets.cmake")
 endif()
 
 if(${INSTALL_PYMOD})
